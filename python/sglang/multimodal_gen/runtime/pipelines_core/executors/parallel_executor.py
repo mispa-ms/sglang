@@ -3,6 +3,7 @@
 from typing import List
 
 import torch
+import torch.cuda.nvtx as nvtx
 
 from sglang.multimodal_gen.runtime.distributed import get_sp_group
 from sglang.multimodal_gen.runtime.distributed.parallel_state import (
@@ -62,15 +63,21 @@ class ParallelExecutor(PipelineExecutor):
         """
         rank = get_classifier_free_guidance_rank()
         cfg_group = get_cfg_group()
+        use_nvtx = server_args.enable_layerwise_nvtx_marker
 
         # TODO: decide when to gather on main when CFG_PARALLEL -> MAIN_RANK_ONLY
         for stage in stages:
             paradigm = stage.parallelism_type
+            stage_name = stage.__class__.__name__
 
             if paradigm == StageParallelismType.MAIN_RANK_ONLY:
                 if rank == 0:
                     # Only main rank executes, others just wait
+                    if use_nvtx:
+                        nvtx.range_push(f"stage_{stage_name}")
                     batch = stage(batch, server_args)
+                    if use_nvtx:
+                        nvtx.range_pop()
                 torch.distributed.barrier()
 
             elif paradigm == StageParallelismType.CFG_PARALLEL:
@@ -80,12 +87,20 @@ class ParallelExecutor(PipelineExecutor):
                 )
                 if rank != 0:
                     batch = broadcasted_list[0]
+                if use_nvtx:
+                    nvtx.range_push(f"stage_{stage_name}")
                 batch = stage(batch, server_args)
+                if use_nvtx:
+                    nvtx.range_pop()
 
                 torch.distributed.barrier()
 
             elif paradigm == StageParallelismType.REPLICATED:
+                if use_nvtx:
+                    nvtx.range_push(f"stage_{stage_name}")
                 batch = stage(batch, server_args)
+                if use_nvtx:
+                    nvtx.range_pop()
         return batch
 
     def execute(

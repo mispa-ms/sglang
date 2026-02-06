@@ -303,6 +303,9 @@ class ServerArgs:
     # Compilation
     enable_torch_compile: bool = False
 
+    # NVTX profiling
+    enable_layerwise_nvtx_marker: bool = False
+
     # warmup
     warmup: bool = False
     warmup_resolutions: list[str] = None
@@ -614,6 +617,14 @@ class ServerArgs:
             default=ServerArgs.enable_torch_compile,
             help="Use torch.compile to speed up DiT inference."
             + "However, will likely cause precision drifts. See (https://github.com/pytorch/pytorch/issues/145213)",
+        )
+
+        parser.add_argument(
+            "--enable-layerwise-nvtx-marker",
+            action=StoreBoolean,
+            default=ServerArgs.enable_layerwise_nvtx_marker,
+            help="Enable layerwise NVTX markers for profiling with Nsight Systems. "
+            "Registers hooks on transformer layers to add NVTX ranges around each layer forward pass.",
         )
 
         # warmup
