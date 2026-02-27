@@ -189,11 +189,41 @@ disproven — the actual issues were unrelated (see Troubleshooting section belo
 
 | Symptom | Root Cause | Fix |
 |---------|-----------|-----|
-| `sglang serve` exits silently, no output | CLI bash wrapper forks and parent exits | Use `python -c "from sglang.cli.main import main; ..."` |
-| nsys profile finishes instantly | nsys loses the forked process | Same — use `python -c` so nsys tracks the actual process |
+| `sglang serve` exits silently, no output | Container's bash wrapper uses `python -m sglang.cli.main` but `main.py` had no `if __name__ == "__main__": main()` guard — Python loaded the module, defined functions, and exited without calling `main()` | Fixed: added `__main__` guard to `cli/main.py`. Also works with `python -c "from sglang.cli.main import main; main()"` |
+| nsys profile finishes instantly | Same root cause — `python -m` exits immediately so nsys has nothing to profile | Same fix. Or use `python -c` approach to bypass the bash wrapper |
 | `error: unrecognized arguments: --disable-cuda-graph` | Flag only exists in text LLM path (`srt`), not diffusion | Remove it — diffusion doesn't use CUDA graphs |
 | `Failed to create ... No such file or directory` | nsys output directory doesn't exist | `mkdir -p /path/to/output/dir` before running |
 | Server seems stuck during loading | Model loading takes ~20s, warmup adds ~10s | Wait — the HTTP URL appears after all loading + warmup |
+
+---
+
+## Root Cause: `sglang serve` Silent Exit
+
+The container's `/usr/local/bin/sglang` is a bash wrapper:
+```bash
+#!/bin/bash
+python -m sglang.cli.main "$@"
+```
+
+`python -m sglang.cli.main` runs `main.py` as `__main__`. But the file only defined
+functions — it never called `main()`. Without `if __name__ == "__main__": main()` at
+the bottom (and no `sglang/cli/__main__.py`), Python loaded the module and exited
+silently. This affected all diffusion and text LLM `sglang serve` calls via this wrapper.
+
+**Why `python -c` worked:** It explicitly calls `main()`:
+```python
+python -c "from sglang.cli.main import main; main()"
+```
+
+**Why pip-installed containers work:** The entry point in `pyproject.toml`
+(`sglang = "sglang.cli.main:main"`) generates a script that calls `main()` directly.
+Only the hand-written bash wrapper using `python -m` was broken.
+
+**Fix (commit `81b23d854`):** Added 2 lines to `python/sglang/cli/main.py`:
+```python
+if __name__ == "__main__":
+    main()
+```
 
 ---
 
