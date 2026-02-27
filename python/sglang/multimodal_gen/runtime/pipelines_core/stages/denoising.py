@@ -156,17 +156,22 @@ class DenoisingStage(PipelineStage):
         nvtx.range_pop()
 
     def _register_nvtx_hooks(self) -> None:
-        """Register NVTX hooks on transformer modules for layerwise profiling."""
+        """Register NVTX hooks on transformer block-level modules for profiling.
+
+        Hooks direct children of each transformer. For nn.ModuleList children
+        (e.g. transformer_blocks), each element is hooked individually.
+        This avoids the massive overhead of hooking every sub-module (Linear,
+        LayerNorm, etc.) which can produce millions of NVTX markers per step.
+        """
         if self._nvtx_hooks_registered:
             return
 
-        skip_types = (
-            nn.Identity,
-            nn.Dropout,
-            nn.Dropout1d,
-            nn.Dropout2d,
-            nn.Dropout3d,
-        )
+        def _hook_module(module, name):
+            if module in self._nvtx_module_to_name_map:
+                return
+            module.register_forward_pre_hook(self._nvtx_module_fwd_pre_hook)
+            module.register_forward_hook(self._nvtx_module_fwd_hook)
+            self._nvtx_module_to_name_map[module] = name
 
         for transformer, prefix in [
             (self.transformer, "transformer"),
@@ -174,17 +179,13 @@ class DenoisingStage(PipelineStage):
         ]:
             if transformer is None:
                 continue
-            for name, module in transformer.named_modules(prefix=prefix):
-                if isinstance(module, skip_types):
-                    continue
-                module.register_forward_pre_hook(self._nvtx_module_fwd_pre_hook)
-                module.register_forward_hook(self._nvtx_module_fwd_hook)
-                if module not in self._nvtx_module_to_name_map:
-                    self._nvtx_module_to_name_map[module] = name
+            for child_name, child in transformer.named_children():
+                full_name = f"{prefix}.{child_name}"
+                if isinstance(child, nn.ModuleList):
+                    for i, block in enumerate(child):
+                        _hook_module(block, f"{full_name}.{i}")
                 else:
-                    logger.warning(
-                        f"NVTX: Module instance {module} is not unique, skipping duplicate"
-                    )
+                    _hook_module(child, full_name)
 
         self._nvtx_hooks_registered = True
         logger.info(
