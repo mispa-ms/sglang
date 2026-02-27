@@ -15,6 +15,7 @@ from functools import lru_cache
 from typing import Any
 
 import torch
+import torch.cuda.nvtx as nvtx
 import torch.nn as nn
 from einops import rearrange
 from tqdm.auto import tqdm
@@ -128,6 +129,68 @@ class DenoisingStage(PipelineStage):
         self._cache_dit_enabled = False
         self._cached_num_steps = None
         self._is_warmed_up = False
+
+        # NVTX layerwise profiling
+        self._nvtx_hooks_registered = False
+        self._nvtx_module_to_name_map = {}
+        if self.server_args.enable_layerwise_nvtx_marker:
+            self._register_nvtx_hooks()
+
+    def _nvtx_module_fwd_pre_hook(self, module_obj, in_tensor):
+        """NVTX pre-hook: push a range before module forward."""
+        module_name = self._nvtx_module_to_name_map.get(module_obj, "unknown")
+        input_shapes = []
+        if isinstance(in_tensor, (list, tuple)):
+            for t in in_tensor:
+                if isinstance(t, torch.Tensor):
+                    input_shapes.append(list(t.size()))
+        elif isinstance(in_tensor, torch.Tensor):
+            input_shapes.append(list(in_tensor.size()))
+        marker_str = f"{module_name}"
+        if input_shapes:
+            marker_str += f" in={input_shapes}"
+        nvtx.range_push(marker_str)
+
+    def _nvtx_module_fwd_hook(self, module_obj, in_tensor, out_tensor):
+        """NVTX post-hook: pop the range after module forward."""
+        nvtx.range_pop()
+
+    def _register_nvtx_hooks(self) -> None:
+        """Register NVTX hooks on transformer modules for layerwise profiling."""
+        if self._nvtx_hooks_registered:
+            return
+
+        skip_types = (
+            nn.Identity,
+            nn.Dropout,
+            nn.Dropout1d,
+            nn.Dropout2d,
+            nn.Dropout3d,
+        )
+
+        for transformer, prefix in [
+            (self.transformer, "transformer"),
+            (self.transformer_2, "transformer_2"),
+        ]:
+            if transformer is None:
+                continue
+            for name, module in transformer.named_modules(prefix=prefix):
+                if isinstance(module, skip_types):
+                    continue
+                module.register_forward_pre_hook(self._nvtx_module_fwd_pre_hook)
+                module.register_forward_hook(self._nvtx_module_fwd_hook)
+                if module not in self._nvtx_module_to_name_map:
+                    self._nvtx_module_to_name_map[module] = name
+                else:
+                    logger.warning(
+                        f"NVTX: Module instance {module} is not unique, skipping duplicate"
+                    )
+
+        self._nvtx_hooks_registered = True
+        logger.info(
+            "NVTX layerwise hooks registered on %d modules",
+            len(self._nvtx_module_to_name_map),
+        )
 
     def _maybe_enable_torch_compile(self, module: object) -> None:
         """
@@ -1007,13 +1070,19 @@ class DenoisingStage(PipelineStage):
         self.scheduler.set_begin_index(0)
         timesteps_cpu = timesteps.cpu()
         num_timesteps = timesteps_cpu.shape[0]
+        use_nvtx = self.server_args.enable_layerwise_nvtx_marker
+
         with torch.autocast(
             device_type=current_platform.device_type,
             dtype=target_dtype,
             enabled=autocast_enabled,
         ):
+            if use_nvtx:
+                nvtx.range_push("denoising_loop")
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 for i, t_host in enumerate(timesteps_cpu):
+                    if use_nvtx:
+                        nvtx.range_push(f"denoising_step_{i}_t{int(t_host.item())}")
                     with StageProfiler(
                         f"denoising_step_{i}",
                         logger=logger,
@@ -1063,6 +1132,8 @@ class DenoisingStage(PipelineStage):
                             timestep_value=t_int,
                             timesteps=timesteps_cpu,
                         )
+                        if use_nvtx:
+                            nvtx.range_push("predict_noise_cfg")
                         noise_pred = self._predict_noise_with_cfg(
                             current_model=current_model,
                             latent_model_input=latent_model_input,
@@ -1079,12 +1150,16 @@ class DenoisingStage(PipelineStage):
                             guidance=guidance,
                             latents=latents,
                         )
+                        if use_nvtx:
+                            nvtx.range_pop()  # predict_noise_cfg
 
                         # Save noise_pred to batch for external access (e.g., ComfyUI)
                         if server_args.comfyui_mode:
                             batch.noise_pred = noise_pred
 
                         # Compute the previous noisy sample
+                        if use_nvtx:
+                            nvtx.range_push("scheduler_step")
                         latents = self.scheduler.step(
                             model_output=noise_pred,
                             timestep=t_device,
@@ -1092,6 +1167,8 @@ class DenoisingStage(PipelineStage):
                             **extra_step_kwargs,
                             return_dict=False,
                         )[0]
+                        if use_nvtx:
+                            nvtx.range_pop()  # scheduler_step
 
                         latents = self.post_forward_for_ti2v_task(
                             batch, server_args, reserved_frames_mask, latents, z
@@ -1112,6 +1189,11 @@ class DenoisingStage(PipelineStage):
 
                         if not is_warmup:
                             self.step_profile()
+                    if use_nvtx:
+                        nvtx.range_pop()  # denoising_step_i
+
+            if use_nvtx:
+                nvtx.range_pop()  # denoising_loop
 
         denoising_end_time = time.time()
 

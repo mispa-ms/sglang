@@ -7,6 +7,8 @@ Synchronous pipeline executor implementation.
 
 from typing import List
 
+import torch.cuda.nvtx as nvtx
+
 from sglang.multimodal_gen.runtime.pipelines_core.executors.pipeline_executor import (
     PipelineExecutor,
     SGLDiffusionProfiler,
@@ -30,8 +32,14 @@ class SyncExecutor(PipelineExecutor):
         """
         Execute all pipeline stages sequentially.
         """
+        use_nvtx = server_args.enable_layerwise_nvtx_marker
         for stage in stages:
+            stage_name = stage.__class__.__name__
+            if use_nvtx:
+                nvtx.range_push(f"stage_{stage_name}")
             batch = stage(batch, server_args)
+            if use_nvtx:
+                nvtx.range_pop()
             profiler = SGLDiffusionProfiler.get_instance()
             if profiler:
                 profiler.step_stage()

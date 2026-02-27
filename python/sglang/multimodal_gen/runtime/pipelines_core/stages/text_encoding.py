@@ -8,6 +8,8 @@ This module contains implementations of prompt encoding stages for diffusion pip
 """
 
 import torch
+import torch.cuda.nvtx as nvtx
+import torch.nn as nn
 
 from sglang.multimodal_gen.configs.models.encoders import BaseEncoderOutput
 from sglang.multimodal_gen.configs.pipeline_configs import FluxPipelineConfig
@@ -45,6 +47,58 @@ class TextEncodingStage(PipelineStage):
         self.tokenizers = tokenizers
         self.text_encoders = text_encoders
 
+        # NVTX layerwise profiling (lazily registered on first forward)
+        self._nvtx_hooks_registered = False
+        self._nvtx_module_to_name_map = {}
+
+    def _nvtx_module_fwd_pre_hook(self, module_obj, in_tensor):
+        module_name = self._nvtx_module_to_name_map.get(module_obj, "unknown")
+        input_shapes = []
+        if isinstance(in_tensor, (list, tuple)):
+            for t in in_tensor:
+                if isinstance(t, torch.Tensor):
+                    input_shapes.append(list(t.size()))
+        elif isinstance(in_tensor, torch.Tensor):
+            input_shapes.append(list(in_tensor.size()))
+        marker_str = f"{module_name}"
+        if input_shapes:
+            marker_str += f" in={input_shapes}"
+        nvtx.range_push(marker_str)
+
+    def _nvtx_module_fwd_hook(self, module_obj, in_tensor, out_tensor):
+        nvtx.range_pop()
+
+    def _register_nvtx_hooks(self) -> None:
+        """Register NVTX hooks on text encoder modules for layerwise profiling."""
+        if self._nvtx_hooks_registered:
+            return
+
+        skip_types = (
+            nn.Identity,
+            nn.Dropout,
+            nn.Dropout1d,
+            nn.Dropout2d,
+            nn.Dropout3d,
+        )
+
+        for idx, text_encoder in enumerate(self.text_encoders):
+            if text_encoder is None:
+                continue
+            prefix = f"text_encoder_{idx}"
+            for name, module in text_encoder.named_modules(prefix=prefix):
+                if isinstance(module, skip_types):
+                    continue
+                module.register_forward_pre_hook(self._nvtx_module_fwd_pre_hook)
+                module.register_forward_hook(self._nvtx_module_fwd_hook)
+                if module not in self._nvtx_module_to_name_map:
+                    self._nvtx_module_to_name_map[module] = name
+
+        self._nvtx_hooks_registered = True
+        logger.info(
+            "NVTX layerwise hooks registered on %d text encoder modules",
+            len(self._nvtx_module_to_name_map),
+        )
+
     @torch.no_grad()
     def forward(
         self,
@@ -54,6 +108,9 @@ class TextEncodingStage(PipelineStage):
         """
         Encode the prompt into text encoder hidden states.
         """
+        if server_args.enable_layerwise_nvtx_marker and not self._nvtx_hooks_registered:
+            self._register_nvtx_hooks()
+
         assert len(self.tokenizers) == len(self.text_encoders)
         assert len(self.text_encoders) == len(
             server_args.pipeline_config.text_encoder_configs
@@ -223,6 +280,7 @@ class TextEncodingStage(PipelineStage):
             )
 
         target_device = device if device is not None else get_local_torch_device()
+        use_nvtx = server_args.enable_layerwise_nvtx_marker
 
         for i in indices:
             tokenizer = self.tokenizers[i]
@@ -261,6 +319,8 @@ class TextEncodingStage(PipelineStage):
                 attention_mask = torch.ones(input_ids.shape[:2], device=target_device)
             else:
                 attention_mask = text_inputs["attention_mask"]
+            if use_nvtx:
+                nvtx.range_push(f"text_encoder_{i}_forward")
             with set_forward_context(current_timestep=0, attn_metadata=None):
                 outputs: BaseEncoderOutput = text_encoder(
                     input_ids=input_ids,
@@ -268,6 +328,8 @@ class TextEncodingStage(PipelineStage):
                     output_hidden_states=True,
                     use_cache=False,
                 )
+            if use_nvtx:
+                nvtx.range_pop()  # text_encoder_forward
             prompt_embeds = postprocess_func(outputs, text_inputs)
             if dtype is not None:
                 prompt_embeds = prompt_embeds.to(dtype=dtype)
