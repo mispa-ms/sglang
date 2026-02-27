@@ -91,25 +91,62 @@ vs. the previous approach which hooked thousands of sub-modules via `named_modul
 
 ## Usage
 
-### Basic profiling
+### Known issue: `sglang serve` CLI wrapper
+
+The `sglang` binary is a bash wrapper (`#!/bin/bash` + `python -m sglang.cli.main "$@"`).
+For diffusion models, the CLI detects the model type and spawns workers via
+`multiprocessing`. The parent process exits immediately, causing:
+- The server to appear to exit silently (no output, no error)
+- `nsys profile sglang serve ...` to finish instantly (nsys loses the process)
+
+**Workaround:** Use `python -c` to call `main()` directly, keeping everything in one process:
 
 ```bash
-sglang serve --model-path Qwen/Qwen-Image-2512 --port 8001 \
-  --dit-cpu-offload false --text-encoder-cpu-offload false \
-  --enable-layerwise-nvtx-marker
+python -c "
+from sglang.cli.main import main
+import sys
+sys.argv = ['sglang', 'serve', '--model-path', 'Qwen/Qwen-Image-2512', '--port', '8001',
+            '--dit-cpu-offload', 'false', '--text-encoder-cpu-offload', 'false',
+            '--warmup', '--enable-layerwise-nvtx-marker']
+main()
+"
 ```
+
+### Note: `--disable-cuda-graph` is NOT a diffusion flag
+
+The diffusion pipeline (`multimodal_gen.runtime.server_args`) does not have
+`--disable-cuda-graph` — that flag only exists in the text LLM path (`srt.server_args`).
+The diffusion pipeline doesn't use CUDA graphs.
 
 ### With Nsight Systems
 
 ```bash
-nsys profile -t cuda,nvtx -o qwen_image_profile \
-  sglang serve --model-path Qwen/Qwen-Image-2512 --port 8001 \
-  --dit-cpu-offload false --text-encoder-cpu-offload false \
-  --enable-layerwise-nvtx-marker
+mkdir -p /path/to/output/dir
+
+nsys profile \
+  --stats=true \
+  -t cuda,nvtx,python-gil,osrt \
+  --python-backtrace=cuda \
+  --cuda-graph-trace=node \
+  --trace-fork-before-exec=true \
+  --sample=process-tree \
+  --output=/path/to/output/dir/nsys \
+  --force-overwrite=true \
+  --wait=all \
+  --duration=300 \
+  --kill=sigterm \
+  python -c "
+from sglang.cli.main import main
+import sys
+sys.argv = ['sglang', 'serve', '--model-path', 'Qwen/Qwen-Image-2512', '--port', '8001',
+            '--dit-cpu-offload', 'false', '--text-encoder-cpu-offload', 'false',
+            '--warmup', '--enable-layerwise-nvtx-marker']
+main()
+"
 ```
 
-Then send a request and open the `.nsys-rep` file in Nsight Systems GUI to see
-the per-layer timeline.
+Then from another terminal, send requests (e.g. via `aiperf profile` or `curl`).
+Open the `.nsys-rep` file in Nsight Systems GUI to see the per-layer timeline.
 
 ### Zero overhead when disabled
 
@@ -132,6 +169,30 @@ are evaluated in hot paths (the flag is checked once and cached in a local varia
 | Per-layer hooks (pre/post) | `_nvtx_module_fwd_pre_hook` | `_nvtx_module_fwd_hook` |
 
 All ranges are properly balanced.
+
+---
+
+## Why Block-Level Hooks (not `named_modules()`)
+
+The initial implementation used `named_modules()` to hook every sub-module in the
+transformer (every `Linear`, `LayerNorm`, `Attention`, `MLP`, etc.). This is the same
+approach used by SRT's `PytHooks` for text LLMs. However, diffusion models have a
+critical difference: **the denoising loop runs 50 steps × 2 CFG passes = 100 full
+forward passes per image**.
+
+| | Text LLM (SRT) | Diffusion |
+|--|-----|------|
+| Forward passes per request | 1 per token | **100** (50 steps × 2 CFG) |
+| Hooks per pass (named_modules) | ~thousands | ~thousands |
+| Total NVTX markers per request | Thousands × N tokens | Thousands × **100** |
+
+With `named_modules()`, this produced **millions of NVTX markers per image**, causing
+extreme overhead under nsys profiling. The server would appear to hang during warmup
+because each marker has profiling overhead that compounds across all passes.
+
+**Fix:** Use `named_children()` + `ModuleList` expansion to hook only block-level
+modules (~30-40 per model). This gives ~3,000-4,000 markers per image — manageable
+and still provides per-transformer-block visibility in nsys.
 
 ---
 
