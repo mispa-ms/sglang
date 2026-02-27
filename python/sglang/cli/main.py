@@ -40,3 +40,7 @@ def main():
 
     args, extra_argv = parser.parse_known_args()
     args.func(args, extra_argv)
+
+
+if __name__ == "__main__":
+    main()
