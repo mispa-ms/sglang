@@ -25,7 +25,7 @@ patterns but adapts them for the multi-stage diffusion pipeline:
 | **Registration** | `model_runner.py` at model load | `DenoisingStage.__init__` (eager) / `TextEncodingStage.forward` (lazy) |
 | **Marker format** | JSON dict: `{"Module": ..., "TrainableParams": ..., "Inputs": ..., "StaticParams": ...}` | Simple string: `"module_name in=[[shapes]]"` |
 | **Module metadata** | Rich — includes trainable params, static params (in_features, etc.) | Lightweight — module name + input shapes only |
-| **Hook granularity** | All named_modules (every sub-module) | Block-level only: direct children + ModuleList elements |
+| **Hook granularity** | All named_modules (every sub-module) | Same — all named_modules (2,477 hooks for Qwen-Image-2512) |
 | **Scope** | Model forward pass only | Model layers + denoising loop structure + stage-level markers |
 | **Additional markers** | None | `denoising_loop`, `denoising_step_i_tXXX`, `predict_noise_cfg`, `scheduler_step`, `stage_*` |
 
@@ -60,23 +60,24 @@ When profiling with Nsight Systems, you'll see a nested hierarchy:
 stage_InputValidationStage
 stage_TextEncodingStage
   ├── text_encoder_0_forward
-  │   ├── text_encoder_0.model                    (inner model — direct child)
-  │   ├── text_encoder_0.layers.0                 (decoder layer 0 — ModuleList element)
-  │   ├── text_encoder_0.layers.1                 (decoder layer 1)
-  │   └── ...                                     (one marker per decoder layer)
+  │   ├── text_encoder_0                          (root module)
+  │   ├── text_encoder_0.model                    (inner model)
+  │   ├── text_encoder_0.model.layers.0           (decoder layer 0)
+  │   ├── text_encoder_0.model.layers.0.self_attn (attention)
+  │   ├── text_encoder_0.model.layers.0.mlp       (feed-forward)
+  │   └── ...                                     (all sub-modules)
 stage_LatentPreparationStage
 stage_TimestepPreparationStage
 stage_DenoisingStage
   └── denoising_loop
       ├── denoising_step_0_t999
       │   ├── predict_noise_cfg
-      │   │   ├── transformer.pos_embed           (direct child)
-      │   │   ├── transformer.patch_embed         (direct child)
-      │   │   ├── transformer.transformer_blocks.0  (DiT block 0 — ModuleList element)
-      │   │   ├── transformer.transformer_blocks.1  (DiT block 1)
-      │   │   ├── ...                             (one marker per transformer block)
-      │   │   ├── transformer.norm_out            (direct child)
-      │   │   └── transformer.proj_out            (direct child)
+      │   │   ├── transformer                     (root module)
+      │   │   ├── transformer.transformer_blocks.0          (DiT block 0)
+      │   │   ├── transformer.transformer_blocks.0.attn1    (self-attention)
+      │   │   ├── transformer.transformer_blocks.0.attn2    (cross-attention)
+      │   │   ├── transformer.transformer_blocks.0.ff       (feed-forward)
+      │   │   └── ...                             (all sub-modules, ~2,477 total)
       │   └── scheduler_step
       ├── denoising_step_1_t979
       │   └── ...
@@ -84,8 +85,7 @@ stage_DenoisingStage
 stage_DecodingStage
 ```
 
-**Hook count:** ~30–40 modules per model (direct children + ModuleList elements)
-vs. the previous approach which hooked thousands of sub-modules via `named_modules()`.
+**Hook count:** 2,477 modules for Qwen-Image-2512 (all sub-modules via `named_modules()`).
 
 ---
 
@@ -172,27 +172,28 @@ All ranges are properly balanced.
 
 ---
 
-## Why Block-Level Hooks (not `named_modules()`)
+## Hook Granularity
 
-The initial implementation used `named_modules()` to hook every sub-module in the
-transformer (every `Linear`, `LayerNorm`, `Attention`, `MLP`, etc.). This is the same
-approach used by SRT's `PytHooks` for text LLMs. However, diffusion models have a
-critical difference: **the denoising loop runs 50 steps × 2 CFG passes = 100 full
-forward passes per image**.
+Uses `named_modules()` to hook all sub-modules (Linear, LayerNorm, Attention, MLP, etc.),
+matching SRT's `PytHooks` approach. For Qwen-Image-2512 this registers **2,477 hooks**.
 
-| | Text LLM (SRT) | Diffusion |
-|--|-----|------|
-| Forward passes per request | 1 per token | **100** (50 steps × 2 CFG) |
-| Hooks per pass (named_modules) | ~thousands | ~thousands |
-| Total NVTX markers per request | Thousands × N tokens | Thousands × **100** |
+Tested and confirmed working both with and without nsys profiling. The total markers per
+image generation (~2,477 hooks × 100 forward passes = ~247K markers) is manageable.
 
-With `named_modules()`, this produced **millions of NVTX markers per image**, causing
-extreme overhead under nsys profiling. The server would appear to hang during warmup
-because each marker has profiling overhead that compounds across all passes.
+**Note:** An earlier investigation suspected this caused server hangs under nsys. This was
+disproven — the actual issues were unrelated (see Troubleshooting section below).
 
-**Fix:** Use `named_children()` + `ModuleList` expansion to hook only block-level
-modules (~30-40 per model). This gives ~3,000-4,000 markers per image — manageable
-and still provides per-transformer-block visibility in nsys.
+---
+
+## Troubleshooting
+
+| Symptom | Root Cause | Fix |
+|---------|-----------|-----|
+| `sglang serve` exits silently, no output | CLI bash wrapper forks and parent exits | Use `python -c "from sglang.cli.main import main; ..."` |
+| nsys profile finishes instantly | nsys loses the forked process | Same — use `python -c` so nsys tracks the actual process |
+| `error: unrecognized arguments: --disable-cuda-graph` | Flag only exists in text LLM path (`srt`), not diffusion | Remove it — diffusion doesn't use CUDA graphs |
+| `Failed to create ... No such file or directory` | nsys output directory doesn't exist | `mkdir -p /path/to/output/dir` before running |
+| Server seems stuck during loading | Model loading takes ~20s, warmup adds ~10s | Wait — the HTTP URL appears after all loading + warmup |
 
 ---
 
