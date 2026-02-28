@@ -219,6 +219,15 @@ python -c "from sglang.cli.main import main; main()"
 (`sglang = "sglang.cli.main:main"`) generates a script that calls `main()` directly.
 Only the hand-written bash wrapper using `python -m` was broken.
 
+**Why this didn't surface before NVTX work:** The bug always existed in `main.py`,
+but it was latent. Official SGLang containers (`sglang:dev`, `sglang:latest`) install
+via `pip install`, which creates a setuptools entry point that calls `main()` directly —
+`python -m` is never used. We started building custom auto_image_builder containers
+(to embed `aiperf==0.5.0` and our NVTX branch) at the same time as the NVTX work.
+The auto_image_builder creates a bash wrapper using `python -m`, which triggers the bug.
+The failure appeared to correlate with NVTX changes, but it was actually caused by
+switching from pip-installed entry points to the bash wrapper.
+
 **Fix (commit `81b23d854`):** Added 2 lines to `python/sglang/cli/main.py`:
 ```python
 if __name__ == "__main__":
