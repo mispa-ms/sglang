@@ -194,6 +194,7 @@ disproven — the actual issues were unrelated (see Troubleshooting section belo
 | `error: unrecognized arguments: --disable-cuda-graph` | Flag only exists in text LLM path (`srt`), not diffusion | Remove it — diffusion doesn't use CUDA graphs |
 | `Failed to create ... No such file or directory` | nsys output directory doesn't exist | `mkdir -p /path/to/output/dir` before running |
 | Server seems stuck during loading | Model loading takes ~20s, warmup adds ~10s | Wait — the HTTP URL appears after all loading + warmup |
+| Ctrl+C doesn't generate nsys trace | `2>&1 \| tee` pipe — SIGINT hits all processes in the pipeline; `tee` exits first causing a broken pipe that kills nsys before it can flush trace data | Run nsys **without** `\| tee`. The `--stats` report and server logs still print to stdout. The `.nsys-rep` file is written on clean shutdown |
 
 ---
 
