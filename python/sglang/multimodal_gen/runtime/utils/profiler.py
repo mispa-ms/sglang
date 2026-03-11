@@ -133,9 +133,19 @@ class DiffusionStepProfiler:
             self._start_cuda_profiler()
             self._profiler_started = True
             self.profiling_active = True
+            if _is_primary_rank():
+                logger.info(
+                    f"Profiling STARTED at global step {current_step}, "
+                    f"will stop at step {end}"
+                )
 
         # Stop profiling when exiting the range
         if current_step >= end and self._profiler_started and self.profiling_active:
+            if _is_primary_rank():
+                logger.info(
+                    f"Profiling STOPPING at global step {current_step} "
+                    f"(captured steps {start}-{current_step})"
+                )
             self._stop_cuda_profiler()
             self.profiling_active = False
 
@@ -159,6 +169,7 @@ class DiffusionStepProfiler:
         """Call cudaProfilerStop to end capture.
         
         Only called on the primary rank (rank 0) to match cudaProfilerStart.
+        If SGLANG_DIFFUSION_EXIT_AFTER_PROFILE is set, exits the process.
         """
         if not torch.cuda.is_available() or not _is_primary_rank():
             return
@@ -167,6 +178,12 @@ class DiffusionStepProfiler:
             f"(range: {self.profile_range[0]}-{self.profile_range[1]})"
         )
         torch.cuda.cudart().cudaProfilerStop()
+        
+        # Exit server after profiling if requested (for BTK automation)
+        if envs.SGLANG_DIFFUSION_EXIT_AFTER_PROFILE:
+            logger.info("SGLANG_DIFFUSION_EXIT_AFTER_PROFILE is set, exiting server...")
+            import sys
+            sys.exit(0)
 
     def get_global_step_count(self) -> int:
         """Get the current global step count."""

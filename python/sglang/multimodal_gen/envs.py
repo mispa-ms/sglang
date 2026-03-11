@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     SGLANG_DIFFUSION_SERVER_DEV_MODE: bool = False
     SGLANG_DIFFUSION_STAGE_LOGGING: bool = False
     SGLANG_DIFFUSION_PROFILE_STEP_RANGE: str | None = None
+    SGLANG_DIFFUSION_EXIT_AFTER_PROFILE: bool = False
     # cache-dit env vars (primary transformer)
     SGLANG_CACHE_DIT_ENABLED: bool = False
     SGLANG_CACHE_DIT_FN: int = 1
@@ -283,6 +284,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Used with nsys -c cudaProfilerApi to capture specific denoising steps
     "SGLANG_DIFFUSION_PROFILE_STEP_RANGE": _lazy_str(
         "SGLANG_DIFFUSION_PROFILE_STEP_RANGE"
+    ),
+    # Exit server after cudaProfilerStop is called (for automation/BTK)
+    "SGLANG_DIFFUSION_EXIT_AFTER_PROFILE": _lazy_bool(
+        "SGLANG_DIFFUSION_EXIT_AFTER_PROFILE", False
     ),
 }
 
