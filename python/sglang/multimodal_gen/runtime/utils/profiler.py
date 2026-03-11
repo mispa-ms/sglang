@@ -8,6 +8,23 @@ from sglang.multimodal_gen import envs
 from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.utils.logging_utils import CYAN, RESET, init_logger
 
+
+def _is_primary_rank() -> bool:
+    """Check if this is the primary rank (rank 0) for cudaProfiler calls.
+    
+    Only the primary rank should call cudaProfilerStart/Stop to avoid
+    redundant profiling data when using multi-GPU (sequence parallelism, etc.).
+    """
+    try:
+        from sglang.multimodal_gen.runtime.distributed import get_world_group
+        world_group = get_world_group()
+        if world_group is not None:
+            return world_group.rank == 0
+    except Exception:
+        pass
+    # If distributed is not initialized, assume single GPU (primary)
+    return True
+
 if current_platform.is_npu():
     import torch_npu
 
@@ -123,8 +140,12 @@ class DiffusionStepProfiler:
         return in_range
 
     def _start_cuda_profiler(self):
-        """Call cudaProfilerStart to begin capture."""
-        if torch.cuda.is_available():
+        """Call cudaProfilerStart to begin capture.
+        
+        Only called on the primary rank (rank 0) to avoid redundant
+        profiling data in multi-GPU setups.
+        """
+        if torch.cuda.is_available() and _is_primary_rank():
             logger.info(
                 f"cudaProfilerStart at global step {self.global_step_count} "
                 f"(range: {self.profile_range[0]}-{self.profile_range[1]})"
@@ -132,8 +153,11 @@ class DiffusionStepProfiler:
             torch.cuda.cudart().cudaProfilerStart()
 
     def _stop_cuda_profiler(self):
-        """Call cudaProfilerStop to end capture."""
-        if torch.cuda.is_available():
+        """Call cudaProfilerStop to end capture.
+        
+        Only called on the primary rank (rank 0) to match cudaProfilerStart.
+        """
+        if torch.cuda.is_available() and _is_primary_rank():
             logger.info(
                 f"cudaProfilerStop at global step {self.global_step_count} "
                 f"(range: {self.profile_range[0]}-{self.profile_range[1]})"
