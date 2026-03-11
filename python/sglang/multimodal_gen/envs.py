@@ -276,6 +276,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "SGLANG_USE_RUNAI_MODEL_STREAMER": _lazy_bool(
         "SGLANG_USE_RUNAI_MODEL_STREAMER", "true"
     ),
+    # ================== Profiling Env Vars ==================
+    # Global denoising step range for cudaProfilerApi profiling
+    # Format: "START-END" (e.g., "100-150" to profile steps 100-150)
+    # Used with nsys -c cudaProfilerApi to capture specific denoising steps
+    "SGLANG_DIFFUSION_PROFILE_STEP_RANGE": _lazy_str(
+        "SGLANG_DIFFUSION_PROFILE_STEP_RANGE"
+    ),
 }
 
 # Add cache-dit Secondary Transformer Env Vars via programmatic generation to reduce duplication

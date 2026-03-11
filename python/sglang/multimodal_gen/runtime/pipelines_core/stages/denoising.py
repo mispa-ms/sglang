@@ -78,7 +78,10 @@ from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.layerwise_offload import OffloadableDiTMixin
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.multimodal_gen.runtime.utils.perf_logger import StageProfiler
-from sglang.multimodal_gen.runtime.utils.profiler import SGLDiffusionProfiler
+from sglang.multimodal_gen.runtime.utils.profiler import (
+    DiffusionStepProfiler,
+    SGLDiffusionProfiler,
+)
 from sglang.multimodal_gen.utils import dict_to_3d_list, masks_like
 
 logger = init_logger(__name__)
@@ -1074,6 +1077,8 @@ class DenoisingStage(PipelineStage):
         num_timesteps = timesteps_cpu.shape[0]
         # Check if NVTX markers are enabled
         use_nvtx = self.server_args.enable_layerwise_nvtx_marker
+        # Get the global step profiler for cudaProfilerApi support
+        step_profiler = DiffusionStepProfiler.get_instance()
 
         with torch.autocast(
             device_type=current_platform.device_type,
@@ -1084,6 +1089,8 @@ class DenoisingStage(PipelineStage):
                 nvtx.range_push("denoising_loop")
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 for i, t_host in enumerate(timesteps_cpu):
+                    # Track global denoising step for cudaProfilerApi profiling
+                    step_profiler.step()
                     if use_nvtx:
                         nvtx.range_push(f"denoising_step_{i}_t{int(t_host.item())}")
                     with StageProfiler(
