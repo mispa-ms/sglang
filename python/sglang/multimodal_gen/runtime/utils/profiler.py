@@ -70,12 +70,15 @@ class DiffusionStepProfiler:
         self.profile_range = _parse_step_range(envs.SGLANG_DIFFUSION_PROFILE_STEP_RANGE)
         self.profiling_active = False
         self._profiler_started = False
+        self._log_interval = 50  # Log every 50 steps
 
         if self.profile_range:
             logger.info(
                 f"DiffusionStepProfiler initialized with step range: "
                 f"{self.profile_range[0]}-{self.profile_range[1]}"
             )
+        else:
+            logger.info("DiffusionStepProfiler initialized (no profile range set)")
 
     @classmethod
     def get_instance(cls) -> "DiffusionStepProfiler":
@@ -102,6 +105,16 @@ class DiffusionStepProfiler:
         """
         current_step = self.global_step_count
         self.global_step_count += 1
+
+        # Log global step count periodically
+        if current_step % self._log_interval == 0:
+            if self.profile_range:
+                logger.info(
+                    f"Global denoising step: {current_step} "
+                    f"(target range: {self.profile_range[0]}-{self.profile_range[1]})"
+                )
+            else:
+                logger.info(f"Global denoising step: {current_step}")
 
         if not self.profile_range:
             return False
@@ -147,6 +160,33 @@ class DiffusionStepProfiler:
     def is_profiling_active(self) -> bool:
         """Check if profiling is currently active."""
         return self.profiling_active
+
+    def log_request_start(self, num_steps: int, request_id: str = None):
+        """
+        Log the start of a new request with its step range.
+
+        Args:
+            num_steps: Number of denoising steps for this request.
+            request_id: Optional request identifier.
+        """
+        start_step = self.global_step_count
+        end_step = start_step + num_steps
+        req_info = f" (request: {request_id})" if request_id else ""
+
+        if self.profile_range:
+            profile_start, profile_end = self.profile_range
+            will_be_profiled = (
+                start_step < profile_end and end_step > profile_start
+            )
+            status = "WILL BE PROFILED" if will_be_profiled else "not in profile range"
+            logger.info(
+                f"Request starting{req_info}: global steps {start_step}-{end_step-1} "
+                f"[{status}] (target: {profile_start}-{profile_end})"
+            )
+        else:
+            logger.info(
+                f"Request starting{req_info}: global steps {start_step}-{end_step-1}"
+            )
 
 
 class SGLDiffusionProfiler:

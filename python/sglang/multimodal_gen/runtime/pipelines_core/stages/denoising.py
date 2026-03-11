@@ -1079,6 +1079,11 @@ class DenoisingStage(PipelineStage):
         use_nvtx = self.server_args.enable_layerwise_nvtx_marker
         # Get the global step profiler for cudaProfilerApi support
         step_profiler = DiffusionStepProfiler.get_instance()
+        # Log request start with step range info
+        step_profiler.log_request_start(
+            num_steps=num_timesteps,
+            request_id=getattr(batch, "request_id", None),
+        )
 
         with torch.autocast(
             device_type=current_platform.device_type,
