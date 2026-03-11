@@ -9,6 +9,7 @@ from sglang.multimodal_gen.runtime.distributed import get_sp_group
 from sglang.multimodal_gen.runtime.distributed.parallel_state import (
     get_cfg_group,
     get_classifier_free_guidance_rank,
+    get_world_rank,
 )
 from sglang.multimodal_gen.runtime.pipelines_core import Req
 from sglang.multimodal_gen.runtime.pipelines_core.executors.pipeline_executor import (
@@ -61,7 +62,10 @@ class ParallelExecutor(PipelineExecutor):
         """
         Execute all pipeline stages respecting their declared parallelism type.
         """
-        rank = get_classifier_free_guidance_rank()
+        if server_args.enable_cfg_parallel:
+            rank = get_classifier_free_guidance_rank()
+        else:
+            rank = get_world_rank()
         cfg_group = get_cfg_group()
         use_nvtx = server_args.enable_layerwise_nvtx_marker
 

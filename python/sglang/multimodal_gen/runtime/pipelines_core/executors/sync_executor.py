@@ -4,6 +4,7 @@
 """
 Synchronous pipeline executor implementation.
 """
+
 from typing import List
 
 import torch.cuda.nvtx as nvtx
