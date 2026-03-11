@@ -145,26 +145,28 @@ class DiffusionStepProfiler:
         """Call cudaProfilerStart to begin capture.
         
         Only called on the primary rank (rank 0) to avoid redundant
-        profiling data in multi-GPU setups.
+        profiling data and duplicate logs in multi-GPU setups.
         """
-        if torch.cuda.is_available() and _is_primary_rank():
-            logger.info(
-                f"cudaProfilerStart at global step {self.global_step_count} "
-                f"(range: {self.profile_range[0]}-{self.profile_range[1]})"
-            )
-            torch.cuda.cudart().cudaProfilerStart()
+        if not torch.cuda.is_available() or not _is_primary_rank():
+            return
+        logger.info(
+            f"cudaProfilerStart at global step {self.global_step_count} "
+            f"(range: {self.profile_range[0]}-{self.profile_range[1]})"
+        )
+        torch.cuda.cudart().cudaProfilerStart()
 
     def _stop_cuda_profiler(self):
         """Call cudaProfilerStop to end capture.
         
         Only called on the primary rank (rank 0) to match cudaProfilerStart.
         """
-        if torch.cuda.is_available() and _is_primary_rank():
-            logger.info(
-                f"cudaProfilerStop at global step {self.global_step_count} "
-                f"(range: {self.profile_range[0]}-{self.profile_range[1]})"
-            )
-            torch.cuda.cudart().cudaProfilerStop()
+        if not torch.cuda.is_available() or not _is_primary_rank():
+            return
+        logger.info(
+            f"cudaProfilerStop at global step {self.global_step_count} "
+            f"(range: {self.profile_range[0]}-{self.profile_range[1]})"
+        )
+        torch.cuda.cudart().cudaProfilerStop()
 
     def get_global_step_count(self) -> int:
         """Get the current global step count."""
@@ -187,28 +189,27 @@ class DiffusionStepProfiler:
         """
         Log the start of a new request with its step range.
 
+        Only logs on primary rank (rank 0) to avoid duplicate log messages
+        in multi-GPU setups, matching the LLM runtime pattern.
+
         Args:
             num_steps: Number of denoising steps for this request.
             request_id: Optional request identifier.
         """
+        if not _is_primary_rank():
+            return
+
         start_step = self.global_step_count
         end_step = start_step + num_steps
         req_info = f" (request: {request_id})" if request_id else ""
 
-        if self.profile_range:
-            profile_start, profile_end = self.profile_range
-            will_be_profiled = (
-                start_step < profile_end and end_step > profile_start
-            )
-            status = "WILL BE PROFILED" if will_be_profiled else "not in profile range"
-            logger.info(
-                f"Request starting{req_info}: global steps {start_step}-{end_step-1} "
-                f"[{status}] (target: {profile_start}-{profile_end})"
-            )
-        else:
-            logger.info(
-                f"Request starting{req_info}: global steps {start_step}-{end_step-1}"
-            )
+        profile_start, profile_end = self.profile_range
+        will_be_profiled = start_step < profile_end and end_step > profile_start
+        status = "WILL BE PROFILED" if will_be_profiled else "not in profile range"
+        logger.info(
+            f"Request starting{req_info}: global steps {start_step}-{end_step-1} "
+            f"[{status}] (target: {profile_start}-{profile_end})"
+        )
 
 
 class SGLDiffusionProfiler:
