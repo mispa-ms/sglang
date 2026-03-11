@@ -1090,137 +1090,136 @@ class DenoisingStage(PipelineStage):
                 request_id=getattr(batch, "request_id", None),
             )
 
-        with torch.autocast(
-            device_type=current_platform.device_type,
-            dtype=target_dtype,
-            enabled=autocast_enabled,
-        ):
-            if use_nvtx:
-                nvtx.range_push("denoising_loop")
-            with self.progress_bar(total=num_inference_steps) as progress_bar:
-                for i, t_host in enumerate(timesteps_cpu):
-                    # Track global denoising step for cudaProfilerApi profiling
-                    if step_profiler.should_profile():
-                        step_profiler.step()
-                    if use_nvtx:
-                        nvtx.range_push(f"denoising_step_{i}_t{int(t_host.item())}")
-                    with StageProfiler(
-                        f"denoising_step_{i}",
-                        logger=logger,
-                        metrics=batch.metrics,
-                        perf_dump_path_provided=batch.perf_dump_path is not None,
-                    ):
-                        t_int = int(t_host.item())
-                        t_device = timesteps[i]
-                        current_model, current_guidance_scale = (
-                            self._select_and_manage_model(
-                                t_int=t_int,
-                                boundary_timestep=boundary_timestep,
-                                server_args=server_args,
-                                batch=batch,
-                            )
-                        )
-
-                        # Expand latents for I2V
-                        latent_model_input = latents.to(target_dtype)
-                        if batch.image_latent is not None:
-                            assert (
-                                not server_args.pipeline_config.task_type
-                                == ModelTaskType.TI2V
-                            ), "image latents should not be provided for TI2V task"
-                            latent_model_input = torch.cat(
-                                [latent_model_input, batch.image_latent], dim=1
-                            ).to(target_dtype)
-
-                        timestep = self.expand_timestep_before_forward(
-                            batch,
-                            server_args,
-                            t_device,
-                            target_dtype,
-                            seq_len,
-                            reserved_frames_mask,
-                        )
-
-                        latent_model_input = self.scheduler.scale_model_input(
-                            latent_model_input, t_device
-                        )
-
-                        # Predict noise residual
-                        attn_metadata = self._build_attn_metadata(
-                            i,
-                            batch,
-                            server_args,
-                            timestep_value=t_int,
-                            timesteps=timesteps_cpu,
-                        )
+        try:
+            with torch.autocast(
+                device_type=current_platform.device_type,
+                dtype=target_dtype,
+                enabled=autocast_enabled,
+            ):
+                if use_nvtx:
+                    nvtx.range_push("denoising_loop")
+                with self.progress_bar(total=num_inference_steps) as progress_bar:
+                    for i, t_host in enumerate(timesteps_cpu):
+                        # Track global denoising step for cudaProfilerApi profiling
+                        if step_profiler.should_profile():
+                            step_profiler.step()
                         if use_nvtx:
-                            nvtx.range_push("predict_noise_cfg")
-                        noise_pred = self._predict_noise_with_cfg(
-                            current_model=current_model,
-                            latent_model_input=latent_model_input,
-                            timestep=timestep,
-                            batch=batch,
-                            timestep_index=i,
-                            attn_metadata=attn_metadata,
-                            target_dtype=target_dtype,
-                            current_guidance_scale=current_guidance_scale,
-                            image_kwargs=image_kwargs,
-                            pos_cond_kwargs=pos_cond_kwargs,
-                            neg_cond_kwargs=neg_cond_kwargs,
-                            server_args=server_args,
-                            guidance=guidance,
-                            latents=latents,
-                        )
-                        if use_nvtx:
-                            nvtx.range_pop()  # predict_noise_cfg
-
-                        # Save noise_pred to batch for external access (e.g., ComfyUI)
-                        if server_args.comfyui_mode:
-                            batch.noise_pred = noise_pred
-
-                        # Compute the previous noisy sample
-                        if use_nvtx:
-                            nvtx.range_push("scheduler_step")
-                        latents = self.scheduler.step(
-                            model_output=noise_pred,
-                            timestep=t_device,
-                            sample=latents,
-                            **extra_step_kwargs,
-                            return_dict=False,
-                        )[0]
-                        if use_nvtx:
-                            nvtx.range_pop()  # scheduler_step
-
-                        latents = self.post_forward_for_ti2v_task(
-                            batch, server_args, reserved_frames_mask, latents, z
-                        )
-
-                        # save trajectory latents if needed
-                        if batch.return_trajectory_latents:
-                            trajectory_timesteps.append(t_host)
-                            trajectory_latents.append(latents)
-
-                        # Update progress bar
-                        if i == num_timesteps - 1 or (
-                            (i + 1) > num_warmup_steps
-                            and (i + 1) % self.scheduler.order == 0
-                            and progress_bar is not None
+                            nvtx.range_push(f"denoising_step_{i}_t{int(t_host.item())}")
+                        with StageProfiler(
+                            f"denoising_step_{i}",
+                            logger=logger,
+                            metrics=batch.metrics,
+                            perf_dump_path_provided=batch.perf_dump_path is not None,
                         ):
-                            progress_bar.update()
+                            t_int = int(t_host.item())
+                            t_device = timesteps[i]
+                            current_model, current_guidance_scale = (
+                                self._select_and_manage_model(
+                                    t_int=t_int,
+                                    boundary_timestep=boundary_timestep,
+                                    server_args=server_args,
+                                    batch=batch,
+                                )
+                            )
 
-                        if not is_warmup:
-                            self.step_profile()
+                            # Expand latents for I2V
+                            latent_model_input = latents.to(target_dtype)
+                            if batch.image_latent is not None:
+                                assert (
+                                    not server_args.pipeline_config.task_type
+                                    == ModelTaskType.TI2V
+                                ), "image latents should not be provided for TI2V task"
+                                latent_model_input = torch.cat(
+                                    [latent_model_input, batch.image_latent], dim=1
+                                ).to(target_dtype)
 
-                    if use_nvtx:
-                        nvtx.range_pop()  # denoising_step_i
+                            timestep = self.expand_timestep_before_forward(
+                                batch,
+                                server_args,
+                                t_device,
+                                target_dtype,
+                                seq_len,
+                                reserved_frames_mask,
+                            )
 
-            if use_nvtx:
-                nvtx.range_pop()  # denoising_loop
+                            latent_model_input = self.scheduler.scale_model_input(
+                                latent_model_input, t_device
+                            )
 
-        # Ensure cudaProfilerStop is called after the loop completes
-        # This handles the normal completion case; for exceptions, the profiler
-        # will be stopped on the next step() call or server shutdown
-        step_profiler.ensure_stopped()
+                            # Predict noise residual
+                            attn_metadata = self._build_attn_metadata(
+                                i,
+                                batch,
+                                server_args,
+                                timestep_value=t_int,
+                                timesteps=timesteps_cpu,
+                            )
+                            if use_nvtx:
+                                nvtx.range_push("predict_noise_cfg")
+                            noise_pred = self._predict_noise_with_cfg(
+                                current_model=current_model,
+                                latent_model_input=latent_model_input,
+                                timestep=timestep,
+                                batch=batch,
+                                timestep_index=i,
+                                attn_metadata=attn_metadata,
+                                target_dtype=target_dtype,
+                                current_guidance_scale=current_guidance_scale,
+                                image_kwargs=image_kwargs,
+                                pos_cond_kwargs=pos_cond_kwargs,
+                                neg_cond_kwargs=neg_cond_kwargs,
+                                server_args=server_args,
+                                guidance=guidance,
+                                latents=latents,
+                            )
+                            if use_nvtx:
+                                nvtx.range_pop()  # predict_noise_cfg
+
+                            # Save noise_pred to batch for external access (e.g., ComfyUI)
+                            if server_args.comfyui_mode:
+                                batch.noise_pred = noise_pred
+
+                            # Compute the previous noisy sample
+                            if use_nvtx:
+                                nvtx.range_push("scheduler_step")
+                            latents = self.scheduler.step(
+                                model_output=noise_pred,
+                                timestep=t_device,
+                                sample=latents,
+                                **extra_step_kwargs,
+                                return_dict=False,
+                            )[0]
+                            if use_nvtx:
+                                nvtx.range_pop()  # scheduler_step
+
+                            latents = self.post_forward_for_ti2v_task(
+                                batch, server_args, reserved_frames_mask, latents, z
+                            )
+
+                            # save trajectory latents if needed
+                            if batch.return_trajectory_latents:
+                                trajectory_timesteps.append(t_host)
+                                trajectory_latents.append(latents)
+
+                            # Update progress bar
+                            if i == num_timesteps - 1 or (
+                                (i + 1) > num_warmup_steps
+                                and (i + 1) % self.scheduler.order == 0
+                                and progress_bar is not None
+                            ):
+                                progress_bar.update()
+
+                            if not is_warmup:
+                                self.step_profile()
+
+                        if use_nvtx:
+                            nvtx.range_pop()  # denoising_step_i
+
+                if use_nvtx:
+                    nvtx.range_pop()  # denoising_loop
+
+        finally:
+            step_profiler.ensure_stopped()
 
         denoising_end_time = time.time()
 
