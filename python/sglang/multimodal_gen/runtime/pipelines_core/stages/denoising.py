@@ -1212,6 +1212,11 @@ class DenoisingStage(PipelineStage):
             if use_nvtx:
                 nvtx.range_pop()  # denoising_loop
 
+        # Ensure cudaProfilerStop is called after the loop completes
+        # This handles the normal completion case; for exceptions, the profiler
+        # will be stopped on the next step() call or server shutdown
+        step_profiler.ensure_stopped()
+
         denoising_end_time = time.time()
 
         if num_timesteps > 0 and not is_warmup:

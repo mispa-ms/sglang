@@ -172,6 +172,15 @@ class DiffusionStepProfiler:
         """Check if profiling is currently active."""
         return self.profiling_active
 
+    def ensure_stopped(self):
+        """Ensure cudaProfilerStop is called if profiling was started.
+        
+        Call this in a finally block to guarantee cleanup on exceptions.
+        """
+        if self._profiler_started and self.profiling_active:
+            self._stop_cuda_profiler()
+            self.profiling_active = False
+
     def log_request_start(self, num_steps: int, request_id: str = None):
         """
         Log the start of a new request with its step range.
