@@ -1079,11 +1079,12 @@ class DenoisingStage(PipelineStage):
         use_nvtx = self.server_args.enable_layerwise_nvtx_marker
         # Get the global step profiler for cudaProfilerApi support
         step_profiler = DiffusionStepProfiler.get_instance()
-        # Log request start with step range info
-        step_profiler.log_request_start(
-            num_steps=num_timesteps,
-            request_id=getattr(batch, "request_id", None),
-        )
+        # Log request start with step range info (only when profiling is configured)
+        if step_profiler.should_profile():
+            step_profiler.log_request_start(
+                num_steps=num_timesteps,
+                request_id=getattr(batch, "request_id", None),
+            )
 
         with torch.autocast(
             device_type=current_platform.device_type,
@@ -1188,8 +1189,6 @@ class DenoisingStage(PipelineStage):
                         latents = self.post_forward_for_ti2v_task(
                             batch, server_args, reserved_frames_mask, latents, z
                         )
-                    if use_nvtx:
-                        nvtx.range_pop()  # denoising_step_i
 
                         # save trajectory latents if needed
                         if batch.return_trajectory_latents:
@@ -1206,6 +1205,9 @@ class DenoisingStage(PipelineStage):
 
                         if not is_warmup:
                             self.step_profile()
+
+                    if use_nvtx:
+                        nvtx.range_pop()  # denoising_step_i
 
             if use_nvtx:
                 nvtx.range_pop()  # denoising_loop
