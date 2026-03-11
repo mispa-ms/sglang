@@ -20,7 +20,9 @@ def _is_primary_rank() -> bool:
         world_group = get_world_group()
         if world_group is not None:
             return world_group.rank == 0
-    except Exception:
+    except (ImportError, RuntimeError):
+        # ImportError: distributed module not available
+        # RuntimeError: distributed not initialized
         pass
     # If distributed is not initialized, assume single GPU (primary)
     return True

@@ -203,14 +203,18 @@ class DenoisingStage(PipelineStage):
                 if isinstance(module, skip_types):
                     continue
 
+                # Skip duplicate module instances (e.g., weight-tied layers)
+                # Check BEFORE registering hooks to avoid double NVTX ranges
+                if module in self._nvtx_module_to_name_map:
+                    logger.warning(
+                        f"NVTX: Module instance {module} already registered as "
+                        f"'{self._nvtx_module_to_name_map[module]}', skipping '{name}'"
+                    )
+                    continue
+
                 module.register_forward_pre_hook(self._nvtx_module_fwd_pre_hook)
                 module.register_forward_hook(self._nvtx_module_fwd_hook)
-                if module not in self._nvtx_module_to_name_map:
-                    self._nvtx_module_to_name_map[module] = name
-                else:
-                    logger.warning(
-                        f"NVTX: Module instance {module} is not unique, skipping duplicate"
-                    )
+                self._nvtx_module_to_name_map[module] = name
 
         self._nvtx_hooks_registered = True
         logger.info(
@@ -1096,7 +1100,8 @@ class DenoisingStage(PipelineStage):
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 for i, t_host in enumerate(timesteps_cpu):
                     # Track global denoising step for cudaProfilerApi profiling
-                    step_profiler.step()
+                    if step_profiler.should_profile():
+                        step_profiler.step()
                     if use_nvtx:
                         nvtx.range_push(f"denoising_step_{i}_t{int(t_host.item())}")
                     with StageProfiler(
