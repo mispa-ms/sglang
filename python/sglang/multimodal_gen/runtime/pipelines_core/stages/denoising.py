@@ -1084,7 +1084,8 @@ class DenoisingStage(PipelineStage):
         # Get the global step profiler for cudaProfilerApi support
         step_profiler = DiffusionStepProfiler.get_instance()
         # Log request start with step range info (only when profiling is configured)
-        if step_profiler.should_profile():
+        # Skip warmup requests - only count real inference requests
+        if step_profiler.should_profile() and not is_warmup:
             step_profiler.log_request_start(
                 num_steps=num_timesteps,
                 request_id=getattr(batch, "request_id", None),
@@ -1101,7 +1102,8 @@ class DenoisingStage(PipelineStage):
                 with self.progress_bar(total=num_inference_steps) as progress_bar:
                     for i, t_host in enumerate(timesteps_cpu):
                         # Track global denoising step for cudaProfilerApi profiling
-                        if step_profiler.should_profile():
+                        # Skip warmup requests - only count real inference requests
+                        if step_profiler.should_profile() and not is_warmup:
                             step_profiler.step()
                         if use_nvtx:
                             nvtx.range_push(f"denoising_step_{i}_t{int(t_host.item())}")
