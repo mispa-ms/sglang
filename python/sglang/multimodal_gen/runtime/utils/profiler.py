@@ -146,8 +146,8 @@ class DiffusionStepProfiler:
                     f"Profiling STOPPING at global step {current_step} "
                     f"(captured steps {start}-{current_step})"
                 )
+            self.profiling_active = False  # set before stop to prevent double-stop in ensure_stopped()
             self._stop_cuda_profiler()
-            self.profiling_active = False
 
         return in_range
 
@@ -179,11 +179,13 @@ class DiffusionStepProfiler:
         )
         torch.cuda.cudart().cudaProfilerStop()
         
-        # Exit server after profiling if requested (for BTK automation)
+        # Exit server after profiling if requested (for BTK automation).
+        # os._exit(0) is used instead of sys.exit(0) because sys.exit raises
+        # SystemExit which is caught by asyncio task machinery and does not
+        # terminate the server process.
         if envs.SGLANG_DIFFUSION_EXIT_AFTER_PROFILE:
             logger.info("SGLANG_DIFFUSION_EXIT_AFTER_PROFILE is set, exiting server...")
-            import sys
-            sys.exit(0)
+            os._exit(0)
 
     def get_global_step_count(self) -> int:
         """Get the current global step count."""
@@ -195,12 +197,12 @@ class DiffusionStepProfiler:
 
     def ensure_stopped(self):
         """Ensure cudaProfilerStop is called if profiling was started.
-        
+
         Call this in a finally block to guarantee cleanup on exceptions.
         """
         if self._profiler_started and self.profiling_active:
+            self.profiling_active = False  # set before stop to prevent re-entry
             self._stop_cuda_profiler()
-            self.profiling_active = False
 
     def log_request_start(self, num_steps: int, request_id: str = None):
         """
