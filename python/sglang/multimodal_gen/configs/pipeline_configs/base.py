@@ -228,6 +228,7 @@ class PipelineConfig:
 
     # Compilation
     # enable_torch_compile: bool = False
+    torch_compile_mode: str = "max-autotune-no-cudagraphs"
 
     # calculate the adjust size for condition image
     # width: original condition image width
