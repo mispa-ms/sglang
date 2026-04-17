@@ -238,13 +238,20 @@ class Scheduler(SchedulerDisaggMixin):
             for resolution in self.server_args.warmup_resolutions:
                 width, height = _parse_size(resolution)
 
+                # CFG-parallel splits cond/uncond across ranks, so rank 1
+                # needs a real uncond pass. Force do_classifier_free_guidance
+                # + non-empty negative_prompt when cfg-parallel is on, so the
+                # synthesized warmup Req exercises both ranks' denoising paths.
+                enable_cfg = self.server_args.enable_cfg_parallel
+                neg_prompt = "warmup" if enable_cfg else ""
                 if requires_warmup_image:
                     req = Req(
                         data_type=task_type.data_type(),
                         width=width,
                         height=height,
                         prompt="",
-                        negative_prompt="",
+                        negative_prompt=neg_prompt,
+                        do_classifier_free_guidance=enable_cfg,
                         image_path=[warmup_input_path],
                     )
                 else:
@@ -253,6 +260,8 @@ class Scheduler(SchedulerDisaggMixin):
                         width=width,
                         height=height,
                         prompt="",
+                        negative_prompt=neg_prompt,
+                        do_classifier_free_guidance=enable_cfg,
                     )
                 req.set_as_warmup(self.server_args.warmup_steps)
                 self.waiting_queue.append((None, req))
